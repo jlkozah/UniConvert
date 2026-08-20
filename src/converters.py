@@ -1,9 +1,14 @@
 import csv
 import json
 import os
+import shutil
+import subprocess
+import zipfile
 
+import markdown as md_lib
+import yaml
 from PIL import Image
-from pypdf import PdfReader
+from pypdf import PdfReader, PdfWriter
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 from reportlab.lib.utils import ImageReader
@@ -11,10 +16,24 @@ import openpyxl
 from docx import Document
 
 IMAGE_EXT = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp", ".ico", ".tiff"}
+AUDIO_EXT = {".mp3", ".wav", ".ogg", ".m4a", ".flac", ".aac", ".wma"}
+VIDEO_EXT = {".mp4", ".avi", ".mov", ".mkv", ".webm", ".wmv", ".flv"}
 
 
 def is_image(path):
     return os.path.splitext(path)[1].lower() in IMAGE_EXT
+
+
+def is_audio(path):
+    return os.path.splitext(path)[1].lower() in AUDIO_EXT
+
+
+def is_video(path):
+    return os.path.splitext(path)[1].lower() in VIDEO_EXT
+
+
+def ffmpeg_available():
+    return shutil.which("ffmpeg") is not None
 
 
 def convert_image(src, dst):
@@ -66,10 +85,34 @@ def pdf_to_text(src, dst):
         f.write(text)
 
 
+def merge_pdfs(paths, dst):
+    writer = PdfWriter()
+    for p in paths:
+        reader = PdfReader(p)
+        for page in reader.pages:
+            writer.add_page(page)
+    with open(dst, "wb") as f:
+        writer.write(f)
+
+
+def _wrap_lines(text, width=105):
+    wrapped = []
+    for raw_line in text.splitlines() or [""]:
+        if not raw_line:
+            wrapped.append("")
+            continue
+        while len(raw_line) > width:
+            wrapped.append(raw_line[:width])
+            raw_line = raw_line[width:]
+        wrapped.append(raw_line)
+    return wrapped
+
+
 def text_to_pdf(src, dst):
     with open(src, "r", encoding="utf-8", errors="ignore") as f:
-        lines = f.read().splitlines()
+        content = f.read()
 
+    lines = _wrap_lines(content)
     c = canvas.Canvas(dst, pagesize=A4)
     width, height = A4
     y = height - 50
@@ -77,7 +120,7 @@ def text_to_pdf(src, dst):
         if y < 50:
             c.showPage()
             y = height - 50
-        c.drawString(50, y, line[:110])
+        c.drawString(50, y, line)
         y -= 14
     c.save()
 
@@ -97,6 +140,59 @@ def docx_to_pdf(src, dst):
         f.write("\n".join(lines))
     text_to_pdf(tmp_txt, dst)
     os.remove(tmp_txt)
+
+
+def markdown_to_html(src, dst):
+    with open(src, "r", encoding="utf-8") as f:
+        text = f.read()
+    html_body = md_lib.markdown(text, extensions=["extra", "tables", "fenced_code"])
+    html_doc = (
+        "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+        "<style>body{font-family:sans-serif;max-width:820px;margin:40px auto;"
+        "line-height:1.55;color:#222} pre{background:#f4f4f4;padding:10px;"
+        "overflow:auto} code{background:#f4f4f4;padding:2px 4px} "
+        "table{border-collapse:collapse} td,th{border:1px solid #ccc;padding:6px}"
+        "</style></head><body>" + html_body + "</body></html>"
+    )
+    with open(dst, "w", encoding="utf-8") as f:
+        f.write(html_doc)
+
+
+def markdown_to_text(src, dst):
+    with open(src, "r", encoding="utf-8") as f:
+        text = f.read()
+    html_body = md_lib.markdown(text)
+    import re
+
+    plain = re.sub("<[^<]+?>", "", html_body)
+    with open(dst, "w", encoding="utf-8") as f:
+        f.write(plain)
+
+
+def markdown_to_pdf(src, dst):
+    tmp_html = dst + ".tmp.html"
+    markdown_to_html(src, tmp_html)
+    html_to_pdf(tmp_html, dst)
+    os.remove(tmp_html)
+
+
+def html_to_pdf(src, dst):
+    from xhtml2pdf import pisa
+
+    with open(src, "r", encoding="utf-8") as f:
+        html_content = f.read()
+    with open(dst, "wb") as out:
+        pisa.CreatePDF(html_content, dest=out)
+
+
+def html_to_text(src, dst):
+    with open(src, "r", encoding="utf-8") as f:
+        content = f.read()
+    import re
+
+    plain = re.sub("<[^<]+?>", "", content)
+    with open(dst, "w", encoding="utf-8") as f:
+        f.write(plain)
 
 
 def csv_to_json(src, dst):
@@ -139,21 +235,91 @@ def xlsx_to_csv(src, dst):
             writer.writerow(row)
 
 
+def json_to_yaml(src, dst):
+    with open(src, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    with open(dst, "w", encoding="utf-8") as f:
+        yaml.dump(data, f, allow_unicode=True, sort_keys=False)
+
+
+def yaml_to_json(src, dst):
+    with open(src, "r", encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+    with open(dst, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+
+
+def convert_audio(src, dst):
+    subprocess.run(
+        ["ffmpeg", "-y", "-i", src, dst],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+def convert_video(src, dst):
+    subprocess.run(
+        ["ffmpeg", "-y", "-i", src, dst],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+def video_to_audio(src, dst):
+    subprocess.run(
+        ["ffmpeg", "-y", "-i", src, "-vn", dst],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+def files_to_zip(paths, dst):
+    with zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED) as zf:
+        for p in paths:
+            zf.write(p, arcname=os.path.basename(p))
+
+
+def zip_to_files(src, out_dir):
+    extracted = []
+    with zipfile.ZipFile(src, "r") as zf:
+        for name in zf.namelist():
+            zf.extract(name, out_dir)
+            extracted.append(os.path.join(out_dir, name))
+    return extracted
+
+
 TARGETS = {
-    "image": ["png", "jpg", "bmp", "gif", "webp", "ico", "pdf"],
-    "pdf": ["png", "jpg", "txt"],
-    "txt": ["pdf"],
+    "image": ["png", "jpg", "bmp", "gif", "webp", "ico", "pdf", "zip"],
+    "pdf": ["png", "jpg", "txt", "pdf"],
+    "txt": ["pdf", "zip"],
     "docx": ["txt", "pdf"],
     "csv": ["json", "xlsx"],
-    "json": ["csv"],
+    "json": ["csv", "yaml"],
+    "yaml": ["json"],
     "xlsx": ["csv"],
+    "md": ["html", "pdf", "txt"],
+    "html": ["pdf", "txt"],
+    "zip": ["extract"],
 }
+
+if ffmpeg_available():
+    TARGETS["audio"] = ["mp3", "wav", "ogg", "m4a", "flac"]
+    TARGETS["video"] = ["mp4", "avi", "mkv", "webm", "mp3", "wav"]
 
 
 def detect_kind(path):
     ext = os.path.splitext(path)[1].lower().lstrip(".")
     if is_image(path):
         return "image"
+    if is_audio(path):
+        return "audio"
+    if is_video(path):
+        return "video"
+    if ext == "yml":
+        return "yaml"
     if ext in TARGETS:
         return ext
     return None
@@ -170,12 +336,29 @@ def run_conversion(src_paths, target_ext, out_dir):
         results.append(dst)
         return results
 
+    if kind == "pdf" and target_ext == "pdf" and len(src_paths) > 1:
+        dst = os.path.join(out_dir, "merged.pdf")
+        merge_pdfs(src_paths, dst)
+        results.append(dst)
+        return results
+
+    if target_ext == "zip":
+        dst = os.path.join(out_dir, "archive.zip")
+        files_to_zip(src_paths, dst)
+        results.append(dst)
+        return results
+
     for src in src_paths:
         base = os.path.splitext(os.path.basename(src))[0]
         kind = detect_kind(src)
         dst = os.path.join(out_dir, f"{base}.{target_ext}")
 
-        if kind == "image" and target_ext == "pdf":
+        if kind == "zip" and target_ext == "extract":
+            sub_dir = os.path.join(out_dir, base)
+            os.makedirs(sub_dir, exist_ok=True)
+            results.extend(zip_to_files(src, sub_dir))
+            continue
+        elif kind == "image" and target_ext == "pdf":
             images_to_pdf([src], dst)
         elif kind == "image":
             convert_image(src, dst)
@@ -190,14 +373,34 @@ def run_conversion(src_paths, target_ext, out_dir):
             docx_to_text(src, dst)
         elif kind == "docx" and target_ext == "pdf":
             docx_to_pdf(src, dst)
+        elif kind == "md" and target_ext == "html":
+            markdown_to_html(src, dst)
+        elif kind == "md" and target_ext == "pdf":
+            markdown_to_pdf(src, dst)
+        elif kind == "md" and target_ext == "txt":
+            markdown_to_text(src, dst)
+        elif kind == "html" and target_ext == "pdf":
+            html_to_pdf(src, dst)
+        elif kind == "html" and target_ext == "txt":
+            html_to_text(src, dst)
         elif kind == "csv" and target_ext == "json":
             csv_to_json(src, dst)
         elif kind == "csv" and target_ext == "xlsx":
             csv_to_xlsx(src, dst)
         elif kind == "json" and target_ext == "csv":
             json_to_csv(src, dst)
+        elif kind == "json" and target_ext == "yaml":
+            json_to_yaml(src, dst)
+        elif kind == "yaml" and target_ext == "json":
+            yaml_to_json(src, dst)
         elif kind == "xlsx" and target_ext == "csv":
             xlsx_to_csv(src, dst)
+        elif kind == "audio":
+            convert_audio(src, dst)
+        elif kind == "video" and target_ext in ("mp3", "wav"):
+            video_to_audio(src, dst)
+        elif kind == "video":
+            convert_video(src, dst)
         else:
             raise ValueError(f"Conversion non supportee: {kind} -> {target_ext}")
 
