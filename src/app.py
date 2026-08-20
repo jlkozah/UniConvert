@@ -1,3 +1,4 @@
+import locale
 import os
 import sys
 import threading
@@ -9,6 +10,7 @@ from PIL import Image
 
 sys.path.insert(0, os.path.dirname(__file__))
 from converters import TARGETS, detect_kind, run_conversion
+from lang import FORMAT_CHIPS, t
 
 if getattr(sys, "frozen", False):
     ASSETS_DIR = os.path.join(sys._MEIPASS, "assets")
@@ -64,6 +66,14 @@ def fmt_size(num_bytes):
             return f"{num_bytes:.0f} {unit}" if unit == "o" else f"{num_bytes:.1f} {unit}"
         num_bytes /= 1024
     return f"{num_bytes:.1f} To"
+
+
+def detect_default_lang():
+    try:
+        code = locale.getdefaultlocale()[0] or ""
+    except Exception:
+        code = ""
+    return "fr" if code.lower().startswith("fr") else "en"
 
 
 class FileRow(ctk.CTkFrame):
@@ -145,19 +155,46 @@ class FileRow(ctk.CTkFrame):
 
 
 class Sidebar(ctk.CTkFrame):
-    def __init__(self, master, app_icon):
+    def __init__(self, master, app_icon, lang, on_lang_change):
         super().__init__(master, fg_color=SIDEBAR, corner_radius=0, width=220)
         self.pack_propagate(False)
+        self.lang = lang
+        self.on_lang_change = on_lang_change
 
         top = ctk.CTkFrame(self, fg_color="transparent")
-        top.pack(fill="x", padx=24, pady=(32, 20))
+        top.pack(fill="x", padx=24, pady=(28, 20))
 
+        header_row = ctk.CTkFrame(top, fg_color="transparent")
+        header_row.pack(fill="x")
         if app_icon:
-            ctk.CTkLabel(top, image=app_icon, text="").pack(anchor="w", pady=(0, 14))
+            ctk.CTkLabel(header_row, image=app_icon, text="").pack(side="left")
 
-        ctk.CTkLabel(top, text="UniConvert", font=("Segoe UI", 20, "bold"), text_color=TEXT).pack(anchor="w")
+        lang_switch = ctk.CTkFrame(header_row, fg_color=CARD_ALT, corner_radius=8)
+        lang_switch.pack(side="right", anchor="n")
+        self.fr_btn = ctk.CTkButton(
+            lang_switch, text="FR", width=34, height=26, corner_radius=6,
+            font=("Segoe UI", 10, "bold"),
+            fg_color=ACCENT_A if lang == "fr" else "transparent",
+            text_color=TEXT if lang == "fr" else TEXT_MUTED,
+            hover_color=ACCENT_HOVER,
+            command=lambda: self.on_lang_change("fr"),
+        )
+        self.fr_btn.pack(side="left", padx=(3, 1), pady=3)
+        self.en_btn = ctk.CTkButton(
+            lang_switch, text="EN", width=34, height=26, corner_radius=6,
+            font=("Segoe UI", 10, "bold"),
+            fg_color=ACCENT_A if lang == "en" else "transparent",
+            text_color=TEXT if lang == "en" else TEXT_MUTED,
+            hover_color=ACCENT_HOVER,
+            command=lambda: self.on_lang_change("en"),
+        )
+        self.en_btn.pack(side="left", padx=(1, 3), pady=3)
+
+        ctk.CTkLabel(top, text=t(lang, "app_name"), font=("Segoe UI", 20, "bold"), text_color=TEXT).pack(
+            anchor="w", pady=(14, 0)
+        )
         ctk.CTkLabel(
-            top, text="Convertisseur universel", font=("Segoe UI", 11), text_color=TEXT_MUTED
+            top, text=t(lang, "tagline"), font=("Segoe UI", 11), text_color=TEXT_MUTED
         ).pack(anchor="w", pady=(2, 0))
 
         divider = ctk.CTkFrame(self, fg_color=BORDER, height=1)
@@ -166,22 +203,17 @@ class Sidebar(ctk.CTkFrame):
         formats_frame = ctk.CTkFrame(self, fg_color="transparent")
         formats_frame.pack(fill="x", padx=24)
         ctk.CTkLabel(
-            formats_frame, text="FORMATS PRIS EN CHARGE", font=("Segoe UI", 10, "bold"), text_color=TEXT_MUTED
+            formats_frame, text=t(lang, "formats_supported"), font=("Segoe UI", 10, "bold"), text_color=TEXT_MUTED
         ).pack(anchor="w", pady=(0, 10))
 
-        chips = [
-            ("🖼", "Images"), ("📄", "PDF"), ("📃", "Word"), ("📘", "Markdown"),
-            ("🌐", "HTML"), ("📊", "CSV / Excel"), ("🔣", "JSON / YAML"),
-            ("🗜", "ZIP"), ("🎵", "Audio"), ("🎬", "Video"),
-        ]
-        for emoji, label in chips:
+        for emoji, label in FORMAT_CHIPS.get(lang, FORMAT_CHIPS["en"]):
             row = ctk.CTkFrame(formats_frame, fg_color="transparent")
             row.pack(fill="x", pady=3)
             ctk.CTkLabel(row, text=emoji, font=("Segoe UI Emoji", 13)).pack(side="left", padx=(0, 8))
             ctk.CTkLabel(row, text=label, font=("Segoe UI", 11), text_color=TEXT_MUTED).pack(side="left")
 
         ctk.CTkLabel(
-            self, text="v1.1", font=("Segoe UI", 10), text_color="#4a4d5c"
+            self, text="v1.2", font=("Segoe UI", 10), text_color="#4a4d5c"
         ).pack(side="bottom", pady=16)
 
 
@@ -193,6 +225,7 @@ class App(BASE_CLASS):
         self.minsize(860, 580)
         self.configure(bg=BG)
 
+        self.lang = detect_default_lang()
         self.files = []
         self.out_dir = os.path.join(os.path.expanduser("~"), "Downloads")
 
@@ -205,13 +238,12 @@ class App(BASE_CLASS):
 
     def _load_icon(self):
         self.app_icon_img = None
-        self.window_icon_photo = None
         png_path = os.path.join(ASSETS_DIR, "icon.png")
         ico_path = os.path.join(ASSETS_DIR, "icon.ico")
         if os.path.exists(png_path):
             pil_img = Image.open(png_path).convert("RGBA")
             small = pil_img.copy()
-            small.thumbnail((48, 48))
+            small.thumbnail((40, 40))
             self.app_icon_img = ctk.CTkImage(light_image=small, dark_image=small, size=small.size)
         if os.path.exists(ico_path):
             try:
@@ -219,11 +251,25 @@ class App(BASE_CLASS):
             except Exception:
                 pass
 
+    def _set_lang(self, lang):
+        if lang == self.lang:
+            return
+        self.lang = lang
+        for child in self.winfo_children():
+            child.destroy()
+        self._build_ui()
+        if DND_AVAILABLE:
+            self.drop_zone.drop_target_register(DND_FILES)
+            self.drop_zone.dnd_bind("<<Drop>>", self._on_drop)
+        self._refresh_list()
+        self._refresh_formats()
+
     def _build_ui(self):
+        L = self.lang
         root = ctk.CTkFrame(self, fg_color=BG, corner_radius=0)
         root.pack(fill="both", expand=True)
 
-        self.sidebar = Sidebar(root, self.app_icon_img)
+        self.sidebar = Sidebar(root, self.app_icon_img, L, self._set_lang)
         self.sidebar.pack(side="left", fill="y")
 
         main = ctk.CTkFrame(root, fg_color=BG)
@@ -238,14 +284,14 @@ class App(BASE_CLASS):
         self.drop_zone.pack(fill="x", pady=(0, 18))
         self.drop_zone.pack_propagate(False)
 
-        drop_text = "Depose tes fichiers ici" if DND_AVAILABLE else "Clique pour choisir des fichiers"
+        drop_text = t(L, "drop_here") if DND_AVAILABLE else t(L, "browse_here")
         inner_drop = ctk.CTkFrame(self.drop_zone, fg_color="transparent")
         inner_drop.pack(expand=True)
         ctk.CTkLabel(inner_drop, text="⇪", font=("Segoe UI", 26), text_color=ACCENT_A).pack()
         self.drop_label = ctk.CTkLabel(inner_drop, text=drop_text, font=("Segoe UI", 14, "bold"), text_color=TEXT)
         self.drop_label.pack(pady=(4, 0))
         ctk.CTkLabel(
-            inner_drop, text="ou clique pour parcourir tes dossiers", font=("Segoe UI", 11), text_color=TEXT_MUTED
+            inner_drop, text=t(L, "browse_hint"), font=("Segoe UI", 11), text_color=TEXT_MUTED
         ).pack()
 
         for w in (self.drop_zone, inner_drop, self.drop_label):
@@ -256,12 +302,12 @@ class App(BASE_CLASS):
         list_header = ctk.CTkFrame(content, fg_color="transparent")
         list_header.pack(fill="x", pady=(0, 8))
         self.count_label = ctk.CTkLabel(
-            list_header, text="Aucun fichier", font=("Segoe UI", 12, "bold"), text_color=TEXT_MUTED
+            list_header, text=t(L, "no_file"), font=("Segoe UI", 12, "bold"), text_color=TEXT_MUTED
         )
         self.count_label.pack(side="left")
         ctk.CTkButton(
             list_header,
-            text="Tout effacer",
+            text=t(L, "clear_all"),
             width=100,
             height=26,
             corner_radius=8,
@@ -282,7 +328,9 @@ class App(BASE_CLASS):
 
         row1 = ctk.CTkFrame(bottom_inner, fg_color="transparent")
         row1.pack(fill="x", pady=(0, 12))
-        ctk.CTkLabel(row1, text="Format de sortie", font=("Segoe UI", 12, "bold"), text_color=TEXT).pack(side="left")
+        ctk.CTkLabel(row1, text=t(L, "output_format"), font=("Segoe UI", 12, "bold"), text_color=TEXT).pack(
+            side="left"
+        )
         self.format_var = tk.StringVar(value="-")
         self.format_menu = ctk.CTkOptionMenu(
             row1,
@@ -306,7 +354,7 @@ class App(BASE_CLASS):
         self.out_label.pack(side="left", fill="x", expand=True)
         ctk.CTkButton(
             row2,
-            text="Changer",
+            text=t(L, "change"),
             width=100,
             height=28,
             corner_radius=8,
@@ -321,7 +369,7 @@ class App(BASE_CLASS):
 
         self.convert_btn = ctk.CTkButton(
             bottom_inner,
-            text="Convertir",
+            text=t(L, "convert"),
             height=46,
             corner_radius=12,
             font=("Segoe UI", 14, "bold"),
@@ -346,7 +394,7 @@ class App(BASE_CLASS):
         self._add_files(raw)
 
     def _browse(self):
-        paths = filedialog.askopenfilenames(title="Choisir des fichiers")
+        paths = filedialog.askopenfilenames(title=t(self.lang, "choose_files_title"))
         if paths:
             self._add_files(paths)
 
@@ -373,15 +421,15 @@ class App(BASE_CLASS):
             child.destroy()
 
         if not self.files:
-            self.count_label.configure(text="Aucun fichier")
+            self.count_label.configure(text=t(self.lang, "no_file"))
             placeholder = ctk.CTkLabel(
-                self.list_scroll, text="Les fichiers ajoutes apparaitront ici",
+                self.list_scroll, text=t(self.lang, "empty_hint"),
                 font=("Segoe UI", 11), text_color="#4a4d5c",
             )
             placeholder.pack(pady=30)
             return
 
-        self.count_label.configure(text=f"{len(self.files)} fichier(s)")
+        self.count_label.configure(text=t(self.lang, "file_count", n=len(self.files)))
         for f in self.files:
             kind = detect_kind(f)
             row = FileRow(self.list_scroll, f, kind, self._remove_file)
@@ -399,25 +447,27 @@ class App(BASE_CLASS):
             self.format_menu.configure(values=options)
             self.format_var.set(options[0])
         else:
-            self.format_menu.configure(values=["non supporte"])
-            self.format_var.set("non supporte")
+            not_supported = t(self.lang, "not_supported")
+            self.format_menu.configure(values=[not_supported])
+            self.format_var.set(not_supported)
 
     def _choose_out_dir(self):
-        d = filedialog.askdirectory(title="Dossier de sortie")
+        d = filedialog.askdirectory(title=t(self.lang, "choose_dir_title"))
         if d:
             self.out_dir = d
             self.out_label.configure(text=self._short_out_dir())
 
     def _start_conversion(self):
+        L = self.lang
         if not self.files:
-            messagebox.showwarning("UniConvert", "Ajoute au moins un fichier.")
+            messagebox.showwarning("UniConvert", t(L, "warn_no_file"))
             return
         target = self.format_var.get()
-        if not target or target in ("-", "non supporte"):
-            messagebox.showwarning("UniConvert", "Choisis un format de sortie valide.")
+        if not target or target in ("-", t(L, "not_supported")):
+            messagebox.showwarning("UniConvert", t(L, "warn_no_format"))
             return
 
-        self.convert_btn.configure(state="disabled", text="Conversion en cours...")
+        self.convert_btn.configure(state="disabled", text=t(L, "converting"))
         self.status_label.configure(text="")
         self.progress.pack(fill="x", pady=(10, 0))
         self.progress.configure(mode="indeterminate")
@@ -434,19 +484,19 @@ class App(BASE_CLASS):
             self.after(0, lambda: self._on_error(exc))
 
     def _on_success(self, results):
+        L = self.lang
         self.progress.stop()
         self.progress.pack_forget()
-        self.convert_btn.configure(state="normal", text="Convertir")
-        self.status_label.configure(
-            text=f"✓  {len(results)} fichier(s) converti(s) avec succes", text_color=GREEN
-        )
-        messagebox.showinfo("UniConvert", f"Termine ! {len(results)} fichier(s) dans :\n{self.out_dir}")
+        self.convert_btn.configure(state="normal", text=t(L, "convert"))
+        self.status_label.configure(text=t(L, "success", n=len(results)), text_color=GREEN)
+        messagebox.showinfo(t(L, "done_title"), t(L, "done_msg", n=len(results), dir=self.out_dir))
 
     def _on_error(self, exc):
+        L = self.lang
         self.progress.stop()
         self.progress.pack_forget()
-        self.convert_btn.configure(state="normal", text="Convertir")
-        self.status_label.configure(text="✕  Echec de la conversion", text_color=RED)
+        self.convert_btn.configure(state="normal", text=t(L, "convert"))
+        self.status_label.configure(text=t(L, "error"), text_color=RED)
         messagebox.showerror("UniConvert", str(exc))
 
 
