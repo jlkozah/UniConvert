@@ -10,7 +10,10 @@ from PIL import Image
 sys.path.insert(0, os.path.dirname(__file__))
 from converters import TARGETS, detect_kind, run_conversion
 
-ASSETS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets")
+if getattr(sys, "frozen", False):
+    ASSETS_DIR = os.path.join(sys._MEIPASS, "assets")
+else:
+    ASSETS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets")
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
